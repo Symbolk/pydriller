@@ -13,7 +13,6 @@
 # limitations under the License.
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from warnings import catch_warnings
 
 import pytest
 from git import Git as PyGit
@@ -42,6 +41,12 @@ def test_get_head(repo: Git):
 
     assert cs.hash == 'da39b1326dbc2edfe518b90672734a08f3c13458'
     assert cs.author_date.timestamp() == 1522164679
+
+
+@pytest.mark.parametrize('repo', ['test-repos/empty_repo/'], indirect=True)
+def test_empty_repo(repo: Git):
+    change_sets = list(repo.get_list_commits())
+    assert change_sets == []
 
 
 @pytest.mark.parametrize('repo', ['test-repos/small_repo/'], indirect=True)
@@ -203,6 +208,23 @@ def test_branches_from_commit(repo: Git):
     assert 'b2' in commit.branches
 
 
+@pytest.mark.parametrize('repo', ['test-repos/tags'], indirect=True)
+def test_tags_from_commit(repo: Git):
+    commit = repo.get_commit('6bb9e2c6a8080e6b5b34e6e316c894b2ddbf7fcd')
+
+    assert commit.tags == {'tag1', 'tag2', 'tag3'}
+
+    commit = repo.get_commit('4638730126d40716e230c2040751a13153fb1556')
+    assert commit.tags == {'tag2', 'tag3'}
+
+
+@pytest.mark.parametrize('repo', ['test-repos/branches_merged'], indirect=True)
+def test_tags_from_commit_without_tags(repo: Git):
+    commit = repo.get_commit('29e929fbc5dc6a2e9c620069b24e2a143af4285f')
+
+    assert commit.tags == set()
+
+
 @pytest.mark.parametrize('repo', ['test-repos/branches_not_merged'], indirect=True)
 def test_other_branches_with_merge(repo: Git):
     commit = repo.get_commit('7203c0b8220dcc7a59614bc7549799cd203ac072')
@@ -243,13 +265,13 @@ def test_should_detail_a_commit(repo: Git):
     assert len(commit.modified_files) == 1
 
     assert commit.modified_files[0].new_path == "Matricula.java"
+    assert commit.modified_files[0].diff
     assert commit.modified_files[0].diff.startswith("@@ -0,0 +1,62 @@\n+package model;") is True
-    assert commit.modified_files[0].content.decode().startswith("package model;") is True   # type: ignore[attr-defined]
+    assert commit.modified_files[0].content is not None
+    assert commit.modified_files[0].content.decode().startswith("package model;") is True
 
-    with catch_warnings(record=True) as w:
-        assert commit.modified_files[0].source_code.startswith("package model;") is True
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
+    assert commit.modified_files[0].source_code is not None
+    assert commit.modified_files[0].source_code.startswith("package model;") is True
 
 
 @pytest.mark.parametrize('repo', ['test-repos/branches_merged'], indirect=True)
@@ -501,3 +523,21 @@ def test_get_commits_last_modified_lines_hyper_blame_with_renaming(repo: Git):
         'A.java']
     assert '9568d20856728304ab0b4d2d02fb9e81d0e5156d' in buggy_commits[
         'H.java']
+
+
+@pytest.mark.parametrize('repo', ["test-repos/diff"], indirect=True)
+def test_diff_function_in_git(repo: Git):
+    from_commit_id = "9e9473d5ca310b7663e9df93c402302b6b7f24aa"
+    to_commit_id = "b267a14e0503fdac36d280422f16360d1f661f12"
+    modied_files = repo.diff(from_commit_id, to_commit_id)
+
+    diff = modied_files[0].diff
+
+    assert len(modied_files) == 1
+    assert "@@ -107,7 +107,7 @@ public class GitRepository implements SCM {" in diff
+    assert "     }" in diff
+    assert "     public static SCMRepository completelyNewName(String path) {" in diff
+    assert "-        return allProjectsIn(path, false);" in diff
+    assert "+        return new GitRepository(path).info();" in diff
+    assert "     }" in diff
+    assert "     public static SCMRepository singleProject(String path, boolean singleParentOnly) {" in diff

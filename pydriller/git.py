@@ -19,7 +19,7 @@ This module includes 1 class, Git, representing a repository in Git.
 import logging
 import os
 from pathlib import Path
-from typing import List, Dict, Set, Generator
+from typing import List, Dict, Optional, Set, Generator
 
 from git import Repo, GitCommandError
 from git.objects import Commit as GitCommit
@@ -118,8 +118,14 @@ class Git:
         if 'reverse' not in kwargs:
             kwargs['reverse'] = True
 
-        for commit in self.repo.iter_commits(rev=rev, **kwargs):
-            yield self.get_commit_from_gitpython(commit)
+        try:
+            for commit in self.repo.iter_commits(rev=rev, **kwargs):
+                yield self.get_commit_from_gitpython(commit)
+        except GitCommandError as gce:
+            if "fatal: bad revision 'HEAD'" in str(gce):
+                logger.debug(f"Could not find commits in {self.path}")
+            else:
+                raise Exception(f"Error while getting commits: {gce}")
 
     def get_commit(self, commit_id: str) -> Commit:
         """
@@ -210,8 +216,8 @@ class Git:
         return tags
 
     def get_commits_last_modified_lines(self, commit: Commit,
-                                        modification: ModifiedFile = None,
-                                        hashes_to_ignore_path: str = None) \
+                                        modification: Optional[ModifiedFile] = None,
+                                        hashes_to_ignore_path: Optional[str] = None) \
             -> Dict[str, Set[str]]:
         """
         Given the Commit object, returns the set of commits that last
@@ -244,9 +250,20 @@ class Git:
         return self._calculate_last_commits(commit, modifications,
                                             hashes_to_ignore_path)
 
+    def diff(self, from_commit_id: str, to_commit_id: str) -> List[ModifiedFile]:
+        from_commit = self.repo.commit(from_commit_id)
+        to_commit = self.repo.commit(to_commit_id)
+        diff_index = from_commit.diff(
+            other=to_commit,
+            paths=None,
+            create_patch=True)
+
+        modified_files_list = [ModifiedFile(diff=diff) for diff in diff_index]
+        return modified_files_list
+
     def _calculate_last_commits(self, commit: Commit,
                                 modifications: List[ModifiedFile],
-                                hashes_to_ignore_path: str = None) \
+                                hashes_to_ignore_path: Optional[str] = None) \
             -> Dict[str, Set[str]]:
 
         commits: Dict[str, Set[str]] = {}
@@ -255,7 +272,10 @@ class Git:
             path = mod.new_path
             if mod.change_type == ModificationType.RENAME or mod.change_type == ModificationType.DELETE:
                 path = mod.old_path
+
             deleted_lines = mod.diff_parsed['deleted']
+
+            assert path is not None, "We could not find the path to the file"
 
             try:
                 blame = self._get_blame(commit.hash, path, hashes_to_ignore_path)
@@ -270,13 +290,14 @@ class Git:
                         if mod.change_type == ModificationType.RENAME:
                             path = mod.new_path
 
+                        assert path is not None, "We could not find the path to the file"
                         commits.setdefault(path, set()).add(self.get_commit(buggy_commit).hash)
             except GitCommandError:
                 logger.debug(f"Could not found file {mod.filename} in commit {commit.hash}. Probably a double rename!")
 
         return commits
 
-    def _get_blame(self, commit_hash: str, path: str, hashes_to_ignore_path: str = None):
+    def _get_blame(self, commit_hash: str, path: str, hashes_to_ignore_path: Optional[str] = None):
         args = ['-w', commit_hash + '^']
         if hashes_to_ignore_path is not None:
             if self.repo.git.version_info >= (2, 23):

@@ -16,12 +16,15 @@ This module includes only 1 class, Developer, representing a developer.
 """
 
 
+from typing import Optional
+
+
 class Developer:
     """
     This class represents a developer. We save the email and the name.
     """
 
-    def __init__(self, name: str = None, email: str = None):
+    def __init__(self, name: Optional[str] = None, email: Optional[str] = None):
         """
         Class to identify a developer.
 
@@ -31,10 +34,19 @@ class Developer:
         self.name = name
         self.email = email
 
-    def __eq__(self, other):
+    def __hash__(self):
+        return hash(str(self))
+
+    def __eq__(self, other: object) -> bool:
         if not isinstance(other, Developer):
             return NotImplemented
         if self is other:
             return True
 
         return self.__dict__ == other.__dict__
+
+    def __repr__(self):
+        return f'Developer("{self.name}", "{self.email}")'
+
+    def __str__(self):
+        return f"{self.name}, <{self.email}>"

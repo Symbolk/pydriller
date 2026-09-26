@@ -18,18 +18,19 @@ Commit, Modification,
 ModificationType and Method.
 """
 import logging
-from _datetime import datetime
+from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import List, Set, Dict, Tuple, Optional
-from warnings import warn
+from typing import Any, List, Set, Dict, Tuple, Optional, Union
 
 import hashlib
 
 import lizard
 import lizard_languages
 from git import Diff, Git, NULL_TREE
+from git.exc import GitCommandError
 from git.objects import Commit as GitCommit
+from git.objects.base import IndexObject
 
 from pydriller.domain.developer import Developer
 
@@ -65,7 +66,7 @@ class Method:
     extracted through Lizard.
     """
 
-    def __init__(self, func):
+    def __init__(self, func: Any) -> None:
         """
         Initialize a method object. This is calculated using Lizard: it parses
         the source code of all the modifications in a commit, extracting
@@ -73,25 +74,25 @@ class Method:
         source code written in one of the supported programming languages).
         """
 
-        self.name = func.name
-        self.long_name = func.long_name
-        self.filename = func.filename
-        self.nloc = func.nloc
-        self.complexity = func.cyclomatic_complexity
-        self.token_count = func.token_count
-        self.parameters = func.parameters
-        self.start_line = func.start_line
-        self.end_line = func.end_line
-        self.fan_in = func.fan_in
-        self.fan_out = func.fan_out
-        self.general_fan_out = func.general_fan_out
-        self.length = func.length
-        self.top_nesting_level = func.top_nesting_level
+        self.name: str = func.name
+        self.long_name: str = func.long_name
+        self.filename: str = func.filename
+        self.nloc: int = func.nloc
+        self.complexity: int = func.cyclomatic_complexity
+        self.token_count: int = func.token_count
+        self.parameters: List[str] = func.parameters
+        self.start_line: int = func.start_line
+        self.end_line: int = func.end_line
+        self.fan_in: int = func.fan_in
+        self.fan_out: int = func.fan_out
+        self.general_fan_out: int = func.general_fan_out
+        self.length: int = func.length
+        self.top_nesting_level: int = func.top_nesting_level
 
-    def __eq__(self, other):
+    def __eq__(self, other) -> bool:
         return self.name == other.name and self.parameters == other.parameters
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         # parameters are used in hashing in order to
         # prevent collisions when overloading method names
         return hash(
@@ -101,7 +102,7 @@ class Method:
                 "long_name",
                 self.long_name,
                 "params",
-                (x for x in self.parameters),
+                tuple(x for x in self.parameters),
             )
         )
 
@@ -154,22 +155,14 @@ class ModifiedFile:
 
     def __init__(
             self,
-            old_path: Optional[str],
-            new_path: Optional[str],
-            change_type: ModificationType,
-            diff_and_content: Dict[str, str],
+            diff: Diff,
     ):
         """
         Initialize a modified file. A modified file carries on information
         regarding the changed file. Normally, you shouldn't initialize a new
         one.
         """
-        self._old_path = Path(old_path) if old_path is not None else None
-        self._new_path = Path(new_path) if new_path is not None else None
-        self.change_type = change_type
-        self.diff = diff_and_content["diff"]
-        self.content = diff_and_content["content"]
-        self.content_before = diff_and_content["content_before"]
+        self._c_diff = diff
 
         self._nloc = None
         self._complexity = None
@@ -177,28 +170,69 @@ class ModifiedFile:
         self._function_list: List[Method] = []
         self._function_list_before: List[Method] = []
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         """
         Implements hashing similar as Git would do it. Alternatively, if the
         object had the hash of th Git Blob, one could use that directly.
 
         :return: int hash
         """
-        string = f"{self.change_type.name} {self.new_path} {self.content}"
+        string = f"{self.change_type.name} {self.new_path} {self.content!r}"
         return hash(hashlib.sha256(string.encode("utf-8")).hexdigest())
 
     @property
-    def source_code(self):
-        warn('The use of `source_code` is deprecated. Use `content` instead.', DeprecationWarning, stacklevel=2)
-        if type(self.content) == bytes:
+    def change_type(self) -> ModificationType:
+        return self._from_change_to_modification_type(self._c_diff)
+
+    @staticmethod
+    def _from_change_to_modification_type(diff: Diff) -> ModificationType:
+        if diff.new_file:
+            return ModificationType.ADD
+        if diff.deleted_file:
+            return ModificationType.DELETE
+        if diff.renamed_file:
+            return ModificationType.RENAME
+        if diff.a_blob and diff.b_blob and diff.a_blob != diff.b_blob:
+            return ModificationType.MODIFY
+
+        return ModificationType.UNKNOWN
+
+    @property
+    def diff(self) -> str:
+        return self._get_decoded_str(self._c_diff.diff) or ''
+
+    def _get_decoded_str(self, diff: Union[str, bytes, None]) -> Optional[str]:
+        try:
+            if isinstance(diff, bytes):
+                return diff.decode("utf-8", "ignore")
+            if isinstance(diff, str):
+                return diff
+            return None
+        except (AttributeError, ValueError):
+            logger.debug(f"Could not load the diff of file {self.filename}")
+            return None
+
+    @property
+    def content(self) -> Optional[bytes]:
+        return self._get_undecoded_content(self._c_diff.b_blob)
+
+    @property
+    def content_before(self) -> Optional[bytes]:
+        return self._get_undecoded_content(self._c_diff.a_blob)
+
+    def _get_undecoded_content(self, blob: Optional[IndexObject]) -> Optional[bytes]:
+        return blob.data_stream.read() if blob is not None else None
+
+    @property
+    def source_code(self) -> Optional[str]:
+        if self.content and isinstance(self.content, bytes):
             return self._get_decoded_content(self.content)
 
         return None
 
     @property
-    def source_code_before(self):
-        warn('The use of `source_code_before` is deprecated. Use `content_before` instead.', DeprecationWarning, stacklevel=2)
-        if type(self.content_before) == bytes:
+    def source_code_before(self) -> Optional[str]:
+        if self.content_before and isinstance(self.content_before, bytes):
             return self._get_decoded_content(self.content_before)
 
         return None
@@ -210,45 +244,61 @@ class ModifiedFile:
 
         :return: int lines_added
         """
+        # GitPython consumes the "--- a/file" and "+++ b/file" headers while it
+        # parses the patch, so self.diff always starts at the first hunk header.
+        # Skipping lines that start with "+++" would drop added lines whose own
+        # content starts with "++", not a header.
         added_lines = 0
         for line in self.diff.replace("\r", "").split("\n"):
-            if line.startswith("+") and not line.startswith("+++"):
+            if line.startswith("+"):
                 added_lines += 1
         return added_lines
 
     @property
-    def deleted_lines(self):
+    def deleted_lines(self) -> int:
         """
         Return the total number of deleted lines in the file.
 
         :return: int lines_deleted
         """
+        # Same as in added_lines: the "--- a/file" header is never part of
+        # self.diff, so a deleted line starting with "--" must still be counted.
         deleted_lines = 0
         for line in self.diff.replace("\r", "").split("\n"):
-            if line.startswith("-") and not line.startswith("---"):
+            if line.startswith("-"):
                 deleted_lines += 1
         return deleted_lines
 
     @property
-    def old_path(self):
+    def old_path(self) -> Optional[str]:
         """
         Old path of the file. Can be None if the file is added.
 
         :return: str old_path
         """
-        if self._old_path is not None:
-            return str(self._old_path)
+        # GitPython infers that an added file has no old path from the
+        # "--- /dev/null" line of the patch header. Git omits that header
+        # when the added file is empty, and GitPython then falls back to the
+        # path on the "diff --git a/X b/X" line, so a_path is wrongly set.
+        if self._c_diff.new_file:
+            return None
+        if self._c_diff.a_path:
+            return str(Path(self._c_diff.a_path))
         return None
 
     @property
-    def new_path(self):
+    def new_path(self) -> Optional[str]:
         """
         New path of the file. Can be None if the file is deleted.
 
         :return: str new_path
         """
-        if self._new_path is not None:
-            return str(self._new_path)
+        # Same reason as in old_path: the "+++ /dev/null" line that marks a
+        # deletion is missing when the deleted file was empty.
+        if self._c_diff.deleted_file:
+            return None
+        if self._c_diff.b_path:
+            return str(Path(self._c_diff.b_path))
         return None
 
     @property
@@ -260,13 +310,13 @@ class ModifiedFile:
 
         :return: str filename
         """
-        if self._new_path is not None and str(self._new_path) != "/dev/null":
-            path = self._new_path
+        if self.new_path is not None and self.new_path != "/dev/null":
+            path = self.new_path
         else:
-            assert self._old_path
-            path = self._old_path
+            assert self.old_path
+            path = self.old_path
 
-        return path.name
+        return Path(path).name
 
     @property
     def language_supported(self) -> bool:
@@ -352,7 +402,7 @@ class ModifiedFile:
         return modified_lines
 
     @staticmethod
-    def _get_line_numbers(line):
+    def _get_line_numbers(line: str) -> Tuple[int, int]:
         token = line.split(" ")
         numbers_old_file = token[1]
         numbers_new_file = token[2]
@@ -449,7 +499,7 @@ class ModifiedFile:
         low_after, high_after = self._risk_profile(self.methods, dmm_prop)
         return low_after - low_before, high_after - high_before
 
-    def _calculate_metrics(self, include_before=False):
+    def _calculate_metrics(self, include_before: bool = False) -> None:
         """
         :param include_before: either to compute the metrics
         for source_code_before, i.e. before the change happened
@@ -479,14 +529,14 @@ class ModifiedFile:
 
             self._function_list_before = [Method(x) for x in anal.function_list]
 
-    def _get_decoded_content(self, content):
+    def _get_decoded_content(self, content: bytes) -> Optional[str]:
         try:
             return content.decode("utf-8", "ignore")
         except (AttributeError, ValueError):
             logger.debug("Could not load the content for file %s", self.filename)
             return None
 
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
         if not isinstance(other, ModifiedFile):
             return NotImplemented
         if self is other:
@@ -508,12 +558,10 @@ class Commit:
         :param conf: Configuration class
         """
         self._c_object = commit
-
-        self._modified_files = None
-        self._branches = None
         self._conf = conf
+        self._stats_cache = None
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         """
         Since already used in Git for identification use the SHA of the commit
         as hash value.
@@ -542,9 +590,25 @@ class Commit:
 
         :return: author
         """
-        return Developer(
+        return self._conf.get("developer_factory").get_developer(
             self._c_object.author.name, self._c_object.author.email
         )
+
+    @property
+    def co_authors(self) -> List[Developer]:
+        """
+        Return the co-authors of the commit as a list of Developer objects.
+
+        :return: List[Developer] author
+        """
+        co_authors = []
+        for co_author in self._c_object.co_authors:
+            d = self._conf.get("developer_factory").get_developer(
+                co_author.name, co_author.email
+            )
+            co_authors.append(d)
+
+        return co_authors
 
     @property
     def committer(self) -> Developer:
@@ -553,7 +617,7 @@ class Commit:
 
         :return: committer
         """
-        return Developer(
+        return self._conf.get("developer_factory").get_developer(
             self._c_object.committer.name, self._c_object.committer.email
         )
 
@@ -641,6 +705,74 @@ class Commit:
         """
         return len(self._c_object.parents) > 1
 
+    def _stats(self):
+        if self._stats_cache is not None:
+            return self._stats_cache
+
+        options = {}
+        if self._conf.get("skip_whitespaces"):
+            options["w"] = True
+
+        if len(self.parents) == 0:
+            text = self._conf.get('git').repo.git.diff_tree(
+                self.hash, "--", numstat=True, root=True, **options
+            )
+            text2 = ""
+            for line in text.splitlines()[1:]:
+                (insertions, deletions, filename) = line.split("\t")
+                text2 += "%s\t%s\t%s\n" % (insertions, deletions, filename)
+            text = text2
+        else:
+            text = self._conf.get('git').repo.git.diff(
+                self._c_object.parents[0].hexsha, self._c_object.hexsha,
+                "--", numstat=True, root=True, **options
+            )
+
+        self._stats_cache = self._list_from_string(text)
+        return self._stats_cache
+
+    @property
+    def patch(self) -> str:
+        """
+        Return the entire patch of the commit, as Git would show it
+        (equivalent to "git show <hash>" or a GitHub ".patch" URL).
+
+        NOTE: returns an empty string for merge commits. Merge commits
+        make up a meaningful fraction of commits in most repositories,
+        and combined-diff parsing for merges is not currently supported
+        by PyDriller (the same limitation applies to modified_files).
+        Check commit.merge before relying on this property if your use
+        case needs merge-commit patches too.
+
+        :return: str patch
+        """
+        git_repo = self._conf.get('git')
+
+        if len(self.parents) > 1:
+            return ''
+
+        if len(self.parents) == 0:
+            text = git_repo.repo.git.diff_tree(self.hash, "-p", "--root", "--")
+            return "\n".join(text.splitlines()[1:])
+
+        return git_repo.repo.git.diff(
+            self._c_object.parents[0].hexsha, self._c_object.hexsha
+        )
+
+    def _list_from_string(self, text: str):
+        total = {"insertions": 0, "deletions": 0, "lines": 0, "files": 0}
+
+        for line in text.splitlines():
+            (raw_insertions, raw_deletions, _) = line.split("\t")
+            insertions = raw_insertions != "-" and int(raw_insertions) or 0
+            deletions = raw_deletions != "-" and int(raw_deletions) or 0
+            total["insertions"] += insertions
+            total["deletions"] += deletions
+            total["lines"] += insertions + deletions
+            total["files"] += 1
+
+        return total
+
     @property
     def insertions(self) -> int:
         """
@@ -648,7 +780,7 @@ class Commit:
 
         :return: int insertion lines
         """
-        return self._c_object.stats.total["insertions"]
+        return self._stats()["insertions"]
 
     @property
     def deletions(self) -> int:
@@ -657,7 +789,7 @@ class Commit:
 
         :return: int deletion lines
         """
-        return self._c_object.stats.total["deletions"]
+        return self._stats()["deletions"]
 
     @property
     def lines(self) -> int:
@@ -666,7 +798,7 @@ class Commit:
 
         :return: int insertion + deletion lines
         """
-        return self._c_object.stats.total["lines"]
+        return self._stats()["lines"]
 
     @property
     def files(self) -> int:
@@ -675,7 +807,7 @@ class Commit:
 
         :return: int modified files number
         """
-        return self._c_object.stats.total["files"]
+        return self._stats()["files"]
 
     @property
     def modified_files(self) -> List[ModifiedFile]:
@@ -687,13 +819,6 @@ class Commit:
 
         :return: List[Modification] modifications
         """
-        if self._modified_files is None:
-            self._modified_files = self._get_modified_files()
-
-        assert self._modified_files is not None
-        return self._modified_files
-
-    def _get_modified_files(self):
         options = {}
         if self._conf.get("histogram"):
             options["histogram"] = True
@@ -703,9 +828,19 @@ class Commit:
 
         if len(self.parents) == 1:
             # the commit has a parent
-            diff_index = self._c_object.parents[0].diff(
-                self._c_object, create_patch=True, **options
-            )
+            try:
+                diff_index: Any = self._c_object.parents[0].diff(
+                    other=self._c_object, paths=None, create_patch=True, **options
+                )
+            except GitCommandError as gce:
+                # In a shallow clone the parent is listed but its object is absent
+                c_git = Git(self._conf.get("path_to_repo"))
+                if c_git.rev_parse("--is-shallow-repository").strip() == "true":
+                    raise Exception(
+                        f"Cannot compute the diff of commit {self.hash} because "
+                        f"{self.project_path} is a shallow clone"
+                    ) from gce
+                raise
         elif len(self.parents) > 1:
             # if it's a merge commit, the modified files of the commit are the
             # conflicts. This because if the file is not in conflict,
@@ -722,42 +857,19 @@ class Commit:
             # this is the first commit of the repo. Comparing it with git
             # NULL TREE
             diff_index = self._c_object.diff(
-                NULL_TREE, create_patch=True, **options
+                NULL_TREE, paths=None, create_patch=True, **options
             )
 
         return self._parse_diff(diff_index)
 
-    def _parse_diff(self, diff_index) -> List[ModifiedFile]:
+    def _parse_diff(self, diff_index: List[Diff]) -> List[ModifiedFile]:
         modified_files_list = []
         for diff in diff_index:
-            old_path = diff.a_path
-            new_path = diff.b_path
-            change_type = self._from_change_to_modification_type(diff)
-
-            diff_and_content = {
-                "diff": self._get_decoded_str(diff.diff),
-                "content_before": self._get_undecoded_content(diff.a_blob),
-                "content": self._get_undecoded_content(diff.b_blob),
-            }
-
             modified_files_list.append(
-                ModifiedFile(old_path, new_path, change_type, diff_and_content)
+                ModifiedFile(diff=diff)
             )
 
         return modified_files_list
-
-    def _get_decoded_str(self, diff):
-        try:
-            return diff.decode("utf-8", "ignore")
-        except (AttributeError, ValueError):
-            logger.debug(
-                "Could not load the diff of a " "file in commit %s",
-                self._c_object.hexsha,
-            )
-            return None
-
-    def _get_undecoded_content(self, diff):
-        return diff.data_stream.read() if diff is not None else None
 
     @property
     def in_main_branch(self) -> bool:
@@ -775,13 +887,6 @@ class Commit:
 
         :return: set(str) branches
         """
-        if self._branches is None:
-            self._branches = self._get_branches()
-
-        assert self._branches is not None
-        return self._branches
-
-    def _get_branches(self):
         c_git = Git(str(self._conf.get("path_to_repo")))
         branches = set()
         args = ["--contains", self.hash]
@@ -792,6 +897,19 @@ class Commit:
         for branch in set(c_git.branch(*args).split("\n")):
             branches.add(branch.strip().replace("* ", ""))
         return branches
+
+    @property
+    def tags(self) -> Set[str]:
+        """
+        Return the set of tags that contain the commit.
+
+        :return: set(str) tags
+        """
+        c_git = Git(str(self._conf.get("path_to_repo")))
+        return {
+            tag for tag in c_git.tag("--contains", self.hash).split("\n")
+            if tag
+        }
 
     @property
     def dmm_unit_size(self) -> Optional[float]:
@@ -920,20 +1038,7 @@ class Commit:
 
         return proportion
 
-    @staticmethod
-    def _from_change_to_modification_type(diff: Diff):
-        if diff.new_file:
-            return ModificationType.ADD
-        if diff.deleted_file:
-            return ModificationType.DELETE
-        if diff.renamed_file:
-            return ModificationType.RENAME
-        if diff.a_blob and diff.b_blob and diff.a_blob != diff.b_blob:
-            return ModificationType.MODIFY
-
-        return ModificationType.UNKNOWN
-
-    def __eq__(self, other):
+    def __eq__(self, other: object) -> bool:
         if not isinstance(other, Commit):
             return NotImplemented
         if self is other:

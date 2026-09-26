@@ -1,5 +1,6 @@
 import logging
 from datetime import datetime
+from pathlib import Path
 import os
 import pytest
 import sys
@@ -58,6 +59,20 @@ def test_simple_url(repo, expected):
     ((["test-repos/small_repo", "test-repos/branches_merged"]), 9)
 ], indirect=['repo'])
 def test_two_local_urls(repo, expected):
+    assert len(repo) == expected
+
+
+@pytest.mark.parametrize('repo,expected', [
+    (Path("test-repos/small_repo"), 5)
+], indirect=['repo'])
+def test_simple_path_object(repo, expected):
+    assert len(repo) == expected
+
+
+@pytest.mark.parametrize('repo,expected', [
+    (([Path("test-repos/small_repo"), Path("test-repos/branches_merged")]), 9)
+], indirect=['repo'])
+def test_two_local_path_objects(repo, expected):
     assert len(repo) == expected
 
 
@@ -217,6 +232,18 @@ def test_ignore_add_whitespaces_and_changed_file():
     assert len(commit.modified_files) == 1
 
 
+def test_ignore_whitespaces_in_stats():
+    for commit in Repository('test-repos/whitespace',
+                             single="338a74ceae164784e216555d930210371279ba8e").traverse_commits():
+        assert commit.insertions > 0
+
+    for commit in Repository('test-repos/whitespace',
+                             skip_whitespaces=True,
+                             single="338a74ceae164784e216555d930210371279ba8e").traverse_commits():
+        assert commit.insertions == 0
+        assert commit.deletions == 0
+
+
 def test_clone_repo_to(tmp_path):
     dt2 = datetime(2018, 10, 20)
     url = "https://github.com/ishepard/pydriller.git"
@@ -267,6 +294,25 @@ def test_projectname_multiple_repos_remote():
     ]
     for commit in Repository(path_to_repo=repos).traverse_commits():
         assert commit.project_name == 'pydriller'
+
+
+def test_get_repo_name_from_url():
+    # with .git in the middle of the name
+    url_set_a = [
+        "https://github.com/academicpages/academicpages.github.io",
+        "https://github.com/academicpages/academicpages.github.io.git",
+    ]
+
+    url_set_b = [
+        "https://github.com/ishepard/pydriller",
+        "https://github.com/ishepard/pydriller.git",
+    ]
+
+    for url in url_set_a:
+        assert Repository._get_repo_name_from_url(url) == "academicpages.github.io"
+
+    for url in url_set_b:
+        assert Repository._get_repo_name_from_url(url) == "pydriller"
 
 
 @pytest.mark.skipif(sys.version_info < (3, 8) and sys.platform == "win32", reason="requires Python3.8 or greater on Windows")

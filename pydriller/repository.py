@@ -25,7 +25,7 @@ import concurrent.futures
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
-from typing import List, Generator, Union
+from typing import List, Generator, Optional, Union
 
 from git import Repo
 
@@ -41,26 +41,27 @@ class Repository:
     This is the main class of PyDriller, responsible for running the study.
     """
 
-    def __init__(self, path_to_repo: Union[str, List[str]],
-                 single: str = None,
-                 since: datetime = None, to: datetime = None,
-                 from_commit: str = None, to_commit: str = None,
-                 from_tag: str = None, to_tag: str = None,
+    def __init__(self, path_to_repo: Union[str, os.PathLike, List[Union[str, os.PathLike]]],
+                 single: Optional[str] = None,
+                 since: Optional[datetime] = None, since_as_filter: Optional[datetime] = None, to: Optional[datetime] = None,
+                 from_commit: Optional[str] = None, to_commit: Optional[str] = None,
+                 from_tag: Optional[str] = None, to_tag: Optional[str] = None,
                  include_refs: bool = False,
                  include_remotes: bool = False,
                  num_workers: int = 1,
-                 only_in_branch: str = None,
-                 only_modifications_with_file_types: List[str] = None,
+                 only_in_branch: Optional[str] = None,
+                 only_modifications_with_file_types: Optional[List[str]] = None,
                  only_no_merge: bool = False,
-                 only_authors: List[str] = None,
-                 only_commits: List[str] = None,
+                 only_authors: Optional[List[str]] = None,
+                 only_commits: Optional[List[str]] = None,
                  only_releases: bool = False,
-                 filepath: str = None,
+                 filepath: Optional[str] = None,
                  include_deleted_files: bool = False,
                  histogram_diff: bool = False,
                  skip_whitespaces: bool = False,
-                 clone_repo_to: str = None,
-                 order: str = None):
+                 clone_repo_to: Optional[str] = None,
+                 order: Optional[str] = None,
+                 use_mailmap: bool = False):
         """
         Init a repository. The only required parameter is
         "path_to_repo": to analyze a single repo, pass the absolute path to
@@ -72,10 +73,13 @@ class Repository:
         repo; if you pass an URL, PyDriller will clone the repo in a
         temporary folder, run the study, and delete the temporary folder.
 
-        :param Union[str,List[str]] path_to_repo: absolute path (or list of
-            absolute paths) to the repository(ies) to analyze
+        :param path_to_repo: absolute path (or list of absolute paths) to the
+            repository(ies) to analyze. Each path can be a string or any
+            os.PathLike object (e.g. a pathlib.Path); remote repositories must
+            be passed as a URL string.
         :param str single: hash of a single commit to analyze
         :param datetime since: starting date
+        :param datetime since_as_filter: starting date (scans all commits, does not stop at first commit with date < since_as_filter)
         :param datetime to: ending date
         :param str from_commit: starting commit (only if `since` is None)
         :param str to_commit: ending commit (only if `to` is None)
@@ -96,11 +100,13 @@ class Repository:
         :param bool only_releases: analyze only tagged commits
         :param bool histogram_diff: add the "--histogram" option when asking for the diff
         :param bool skip_whitespaces: add the "-w" option when asking for the diff
-        :param bool clone_repo_to: if the repo under analysis is remote, clone the repo to the specified directory
+        :param str clone_repo_to: if the repo under analysis is remote, clone the repo to the specified directory
         :param str filepath: only commits that modified this file will be analyzed
         :param bool include_deleted_files: include commits modifying a deleted file (useful when analyzing a deleted `filepath`)
         :param str order: order of commits. It can be one of: 'date-order',
             'author-date-order', 'topo-order', or 'reverse'. If order=None, PyDriller returns the commits from the oldest to the newest.
+        :param bool use_mailmap: Map names and emails of authors and committers to canonical values when a .mailmap file is present in
+            the repository.
         """
         file_modification_set = (
             None if only_modifications_with_file_types is None
@@ -119,6 +125,7 @@ class Repository:
             "from_tag": from_tag,
             "to_tag": to_tag,
             "since": since,
+            "since_as_filter": since_as_filter,
             "to": to,
             "single": single,
             "include_refs": include_refs,
@@ -137,7 +144,8 @@ class Repository:
             "tagged_commits": None,
             "histogram": histogram_diff,
             "clone_repo_to": clone_repo_to,
-            "order": order
+            "order": order,
+            "use_mailmap": use_mailmap
         }
         self._conf = Conf(options)
 
@@ -147,7 +155,7 @@ class Repository:
 
     @staticmethod
     def _is_remote(repo: str) -> bool:
-        return repo.startswith(("git@", "https://", "http://"))
+        return repo.startswith(("git@", "https://", "http://", "git://"))
 
     def _clone_remote_repo(self, tmp_folder: str, repo: str) -> str:
         repo_folder = os.path.join(tmp_folder, self._get_repo_name_from_url(repo))
@@ -230,28 +238,20 @@ class Repository:
                 # Build the arguments to pass to git rev-list.
                 rev, kwargs = self._conf.build_args()
 
-                commits_list = list(git.get_list_commits(rev, **kwargs))
-
-                if not commits_list:
-                    return
-
-                chunks = self._split_in_chunks(commits_list, self._conf.get("num_workers"))
                 with concurrent.futures.ThreadPoolExecutor(max_workers=self._conf.get("num_workers")) as executor:
-                    jobs = {executor.submit(self._iter_commits, chunk): chunk for chunk in chunks}
+                    for job in executor.map(self._iter_commits, git.get_list_commits(rev, **kwargs)):
 
-                    for job in concurrent.futures.as_completed(jobs):
-                        for commit in job.result():
+                        for commit in job:
                             yield commit
 
-    def _iter_commits(self, commits_list: List[Commit]) -> Generator[Commit, None, None]:
-        for commit in commits_list:
-            logger.info(f'Commit #{commit.hash} in {commit.committer_date} from {commit.author.name}')
+    def _iter_commits(self, commit: Commit) -> Generator[Commit, None, None]:
+        logger.info(f'Commit #{commit.hash} in {commit.committer_date} from {commit.author.name}')
 
-            if self._conf.is_commit_filtered(commit):
-                logger.info(f'Commit #{commit.hash} filtered')
-                continue
+        if self._conf.is_commit_filtered(commit):
+            logger.info(f'Commit #{commit.hash} filtered')
+            return
 
-            yield commit
+        yield commit
 
     @staticmethod
     def _split_in_chunks(full_list: List[Commit], num_workers: int) -> List[List[Commit]]:
@@ -272,12 +272,17 @@ class Repository:
     @staticmethod
     def _get_repo_name_from_url(url: str) -> str:
         last_slash_index = url.rfind("/")
-        last_suffix_index = url.rfind(".git")
-        if last_suffix_index < 0:
-            last_suffix_index = len(url)
+        len_url = len(url)
 
-        if last_slash_index < 0 or last_suffix_index <= last_slash_index:
+        if last_slash_index < 0 or last_slash_index >= len_url - 1:
             raise MalformedUrl(f"Badly formatted url {url}")
+
+        last_dot_index = url.rfind(".")
+
+        if url[last_dot_index:] == ".git":
+            last_suffix_index = last_dot_index
+        else:
+            last_suffix_index = len_url
 
         return url[last_slash_index + 1:last_suffix_index]
 

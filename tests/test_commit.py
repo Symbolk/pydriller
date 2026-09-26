@@ -13,11 +13,11 @@
 # limitations under the License.
 from pydriller.git import Git
 from pathlib import Path
-from warnings import catch_warnings
+from mock import patch
 import pytest
 import logging
 
-from pydriller.domain.commit import ModifiedFile, ModificationType
+from pydriller.domain.commit import ModificationType, ModifiedFile
 
 logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -41,43 +41,35 @@ def test_equal(repo: Git):
     assert c1 != c3
 
 
-def test_filename():
-    diff_and_sc = {
-        'diff': '',
-        'content': b'',
-        'content_before': b''
-    }
-    m1 = ModifiedFile('dspadini/pydriller/myfile.py',
-                      'dspadini/pydriller/mynewfile.py',
-                      ModificationType.ADD, diff_and_sc)
-    m3 = ModifiedFile('dspadini/pydriller/myfile.py',
-                      'dspadini/pydriller/mynewfile.py',
-                      ModificationType.ADD, diff_and_sc)
-    m2 = ModifiedFile('dspadini/pydriller/myfile.py',
-                      None,
-                      ModificationType.ADD, diff_and_sc)
+@patch('git.diff.Diff')
+def test_filename(mocked_diff):
+    mocked_diff.new_file = False
+    mocked_diff.deleted_file = False
+    mocked_diff.a_path = 'dspadini/pydriller/myfile.py'
+    mocked_diff.b_path = 'dspadini/pydriller/mynewfile.py'
+
+    m1 = ModifiedFile(mocked_diff)
 
     assert m1.filename == 'mynewfile.py'
-    assert m2.filename == 'myfile.py'
-    assert m1 != m2
-    assert m3 == m1
+
+    assert m1.new_path == str(Path('dspadini/pydriller/mynewfile.py'))
+    assert m1.old_path == str(Path('dspadini/pydriller/myfile.py'))
 
 
-def test_metrics_python():
+@patch('git.diff.Diff')
+def test_metrics_python(mocked_diff):
+    mocked_diff.new_file = False
+    mocked_diff.deleted_file = False
     with open('test-repos/lizard/git_repository.py', 'rb') as f:
         content = f.read()
 
-    diff_and_sc = {
-        'diff': '',
-        'content': content,
-        'content_before': content
-    }
+    mocked_diff.a_path = 'test-repos/lizard/git_repository.py'
+    mocked_diff.b_path = "test-repos/lizard/git_repository.py"
+    mocked_diff.b_blob.data_stream.read.return_value = content
 
-    m1 = ModifiedFile('test-repos/lizard/git_repository.py',
-                      "test-repos/lizard/git_repository.py",
-                      ModificationType.MODIFY, diff_and_sc)
+    m1 = ModifiedFile(mocked_diff)
 
-    assert m1.nloc == 196
+    assert m1.nloc == 116
     assert m1.token_count == 1009
     assert m1.complexity == 43
 
@@ -137,19 +129,18 @@ def test_changed_methods():
     assert len(mod.changed_methods) == 3
 
 
-def test_metrics_cpp():
+@patch('git.diff.Diff')
+def test_metrics_cpp(mocked_diff):
+    mocked_diff.new_file = False
+    mocked_diff.deleted_file = False
     with open('test-repos/lizard/FileCPP.cpp', 'rb') as f:
         content = f.read()
 
-    diff_and_sc = {
-        'diff': '',
-        'content': content,
-        'content_before': content
-    }
+    mocked_diff.a_path = 'test-repos/lizard/FileCPP.cpp'
+    mocked_diff.b_path = "test-repos/lizard/FileCPP.cpp"
+    mocked_diff.b_blob.data_stream.read.return_value = content
 
-    m1 = ModifiedFile('test-repos/lizard/FileCPP.cpp',
-                      "test-repos/lizard/FileCPP.cpp",
-                      ModificationType.MODIFY, diff_and_sc)
+    m1 = ModifiedFile(mocked_diff)
 
     assert m1.nloc == 793
     assert m1.token_count == 5564
@@ -158,19 +149,18 @@ def test_metrics_cpp():
     assert len(m1.methods) == 16
 
 
-def test_metrics_java():
+@patch('git.diff.Diff')
+def test_metrics_java(mocked_diff):
+    mocked_diff.new_file = False
+    mocked_diff.deleted_file = False
     with open('test-repos/lizard/FileJava.java', 'rb') as f:
         content = f.read()
 
-    diff_and_sc = {
-        'diff': '',
-        'content': content,
-        'content_before': content
-    }
+    mocked_diff.a_path = 'test-repos/lizard/FileJava.java'
+    mocked_diff.b_path = "test-repos/lizard/FileJava.java"
+    mocked_diff.b_blob.data_stream.read.return_value = content
 
-    m1 = ModifiedFile('test-repos/lizard/FileJava.java',
-                      "test-repos/lizard/FileJava.java",
-                      ModificationType.MODIFY, diff_and_sc)
+    m1 = ModifiedFile(mocked_diff)
 
     assert m1.nloc == 466
     assert m1.token_count == 3809
@@ -179,18 +169,15 @@ def test_metrics_java():
     assert len(m1.methods) == 46
 
 
-def test_metrics_not_supported_file():
+@patch('git.diff.Diff')
+def test_metrics_not_supported_file(mocked_diff):
+    mocked_diff.new_file = False
+    mocked_diff.deleted_file = False
     content = b'asd !&%@*&^@\n jjdkj'
 
-    diff_and_sc = {
-        'diff': '',
-        'content': content,
-        'content_before': content
-    }
+    mocked_diff.b_blob.data_stream.read.return_value = content
 
-    m1 = ModifiedFile('test-repos/lizard/NotSupported.pdf',
-                      "test-repos/lizard/NotSupported.pdf",
-                      ModificationType.MODIFY, diff_and_sc)
+    m1 = ModifiedFile(mocked_diff)
 
     assert m1.nloc is None
 
@@ -293,15 +280,8 @@ def test_content_before(repo: Git):
 def test_source_code_before(repo: Git):
     m1 = repo.get_commit('ffccf1e7497eb8136fd66ed5e42bef29677c4b71').modified_files[0]
 
-    with catch_warnings(record=True) as w:
-        assert m1.source_code is None
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-
-    with catch_warnings(record=True) as w:
-        assert m1.source_code_before is not None
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
+    assert m1.source_code is None
+    assert m1.source_code_before is not None
 
 
 @pytest.mark.parametrize('repo', ['test-repos/source_code_before_commit'], indirect=True)
@@ -341,15 +321,10 @@ def test_source_code_before_complete(repo: Git):
               'sc_A_ca1f75455f064410360bc56218d0418221cf9484.txt') as f:
         sc = f.read()
 
-    with catch_warnings(record=True) as w:
-        assert m1.source_code == sc
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-
-    with catch_warnings(record=True) as w:
-        assert m1.source_code_before is None
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
+    assert m1.source_code == sc
+    assert m1.content is not None
+    assert m1.content.decode("utf-8") == sc
+    assert m1.source_code_before is None
 
     old_sc = sc
     with open(
@@ -359,28 +334,21 @@ def test_source_code_before_complete(repo: Git):
 
     m1 = repo.get_commit('022ebf5fba835c6d95e99eaccc2d85b3db5a2ec0').modified_files[0]
 
-    with catch_warnings(record=True) as w:
-        assert m1.source_code == sc
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-
-    with catch_warnings(record=True) as w:
-        assert m1.source_code_before == old_sc
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
+    assert m1.source_code == sc
+    assert m1.content is not None
+    assert m1.content.decode("utf-8") == sc
+    assert m1.source_code_before == old_sc
+    assert m1.content_before is not None
+    assert m1.content_before.decode("utf-8") == old_sc
 
     old_sc = sc
     m1 = repo.get_commit('ecd6780457835a2fc85c532338a29f2c98a6cfeb').modified_files[0]
 
-    with catch_warnings(record=True) as w:
-        assert m1.source_code is None
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
-
-    with catch_warnings(record=True) as w:
-        assert m1.source_code_before == old_sc
-        assert len(w) == 1
-        assert issubclass(w[0].category, DeprecationWarning)
+    assert m1.source_code is None
+    assert m1.content is None
+    assert m1.source_code_before == old_sc
+    assert m1.content_before is not None
+    assert m1.content_before.decode("utf-8") == old_sc
 
 
 @pytest.mark.parametrize('repo', ['test-repos/small_repo'], indirect=True)
@@ -421,3 +389,126 @@ def test_shortstats_add_and_del(repo: Git):
     assert c1.lines == 2
     assert c1.files == 1
     assert c1.deletions == 1
+
+
+@pytest.mark.parametrize('repo', ['test-repos/diff'], indirect=True)
+def test_deleted_lines_starting_with_dashes(repo: Git):
+    c1 = repo.get_commit('156111a7a49d6906da0fedfda9cf1cf0e8c3f08b')
+    modification = next(mod for mod in c1.modified_files
+                        if mod.filename == 'reference.rst')
+
+    # the deleted block contains the reST underline "----------------", which
+    # git reports as a deleted line and not as the "--- a/file" patch header
+    assert modification.deleted_lines == 9
+    assert modification.deleted_lines == len(modification.diff_parsed['deleted'])
+    assert sum(mod.added_lines for mod in c1.modified_files) == c1.insertions
+    assert sum(mod.deleted_lines for mod in c1.modified_files) == c1.deletions
+
+
+@patch('git.diff.Diff')
+def test_added_and_deleted_lines_starting_with_plus_and_minus(mocked_diff):
+    mocked_diff.diff = (b'@@ -1,3 +1,3 @@\n'
+                        b' int main() {\n'
+                        b'---i;\n'
+                        b'+++i;\n'
+                        b' }\n')
+
+    modification = ModifiedFile(mocked_diff)
+
+    assert modification.added_lines == 1
+    assert modification.deleted_lines == 1
+
+
+@pytest.mark.parametrize('repo', ['test-repos/small_repo'], indirect=True)
+def test_patch_root_commit(repo: Git):
+    commit = repo.get_commit('a88c84ddf42066611e76e6cb690144e5357d132c')
+    assert commit.patch.startswith('diff --git')
+    assert 'new file mode' in commit.patch
+
+
+@pytest.mark.parametrize('repo', ['test-repos/small_repo'], indirect=True)
+def test_patch_normal_commit(repo: Git):
+    commit = repo.get_commit('6411e3096dd2070438a17b225f44475136e54e3a')
+    assert commit.patch.startswith('diff --git')
+    assert '-    public boolean isMerge() {' in commit.patch
+
+
+@pytest.mark.parametrize('repo', ['test-repos/branches_merged'], indirect=True)
+def test_patch_merge_commit(repo: Git):
+    commit = repo.get_commit('29e929fbc5dc6a2e9c620069b24e2a143af4285f')
+    assert commit.merge is True
+    assert commit.patch == ''
+
+
+@pytest.mark.parametrize("repo", ["test-repos/complex_repo"], indirect=True)
+def test_commit_dictset(repo: Git):
+    c1 = repo.get_commit("e7d13b0511f8a176284ce4f92ed8c6e8d09c77f2")
+    c2 = repo.get_commit(c1.parents[0])
+    c3 = repo.get_commit("a4ece0762e797d2e2dcbd471115108dd6e05ff58")
+
+    commit_dict = {c1: c1.hash, c2: c2.hash, c3: c3.hash}
+
+    assert isinstance(commit_dict, dict)
+    assert commit_dict[c1] == "e7d13b0511f8a176284ce4f92ed8c6e8d09c77f2"
+    assert commit_dict[c2] == c1.parents[0]
+    assert commit_dict[c3] == "a4ece0762e797d2e2dcbd471115108dd6e05ff58"
+    assert commit_dict[c1] != commit_dict[c2]
+
+    commit_set = {c1, c2, c3}
+    assert isinstance(commit_set, set)
+    assert c1 in commit_set
+    assert commit_set - {c1} == {c2, c3}
+
+
+@pytest.mark.parametrize("repo", ["test-repos/complex_repo"], indirect=True)
+def test_modification_dictset(repo: Git):
+    c1 = repo.get_commit("e7d13b0511f8a176284ce4f92ed8c6e8d09c77f2")
+    c2 = repo.get_commit(c1.parents[0])
+
+    m1 = c1.modified_files[0]
+    m2s = c2.modified_files
+
+    mod_dict = {m1: c1, m2s[0]: c2, m2s[1]: c2}
+
+    assert isinstance(mod_dict, dict)
+    assert mod_dict[m1].hash == "e7d13b0511f8a176284ce4f92ed8c6e8d09c77f2"
+    assert mod_dict[m2s[0]].hash == c1.parents[0]
+    assert mod_dict[m2s[1]].hash == c1.parents[0]
+    assert m1 != m2s[0]
+
+    mod_set = {m1}.union(set(m2s))
+    assert isinstance(mod_set, set)
+    assert m1 in mod_set
+    assert mod_set - {m1} == set(m2s)
+
+
+@pytest.mark.parametrize('repo', ['test-repos/multiple_authors'], indirect=True)
+def test_co_authors(repo: Git):
+    c1 = repo.get_commit('a455e6c8ba6960aa8b89bd0fd5f9abefcd10bcd6')
+
+    assert c1.co_authors[0].name == "Somebody"
+    assert c1.co_authors[0].email == "some@body.org"
+
+
+@pytest.mark.parametrize('repo', ['test-repos/diff'], indirect=True)
+def test_added_empty_file_has_no_old_path(repo: Git):
+    c1 = repo.get_commit('4be0402d466470ae7274c4244bad2712dfeda3ab')
+
+    added = [mod for mod in c1.modified_files
+             if mod.new_path == str(Path('pydriller/tests/integration/__init__.py'))]
+
+    assert len(added) == 1
+    assert added[0].change_type == ModificationType.ADD
+    assert added[0].old_path is None
+
+
+@pytest.mark.parametrize('repo', ['test-repos/diff'], indirect=True)
+def test_deleted_empty_file_has_no_new_path(repo: Git):
+    c1 = repo.get_commit('df51c5ef1ab01640971ececfd3354623bc67dc2e')
+
+    deleted = [mod for mod in c1.modified_files
+               if mod.old_path == str(Path('pydriller/tests/integration/__init__.py'))]
+
+    assert len(deleted) == 1
+    assert deleted[0].change_type == ModificationType.DELETE
+    assert deleted[0].new_path is None
